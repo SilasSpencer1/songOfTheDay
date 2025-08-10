@@ -52,7 +52,7 @@ class SpotifyDataClient:
         settings = load_settings()
         auth = SpotifyOAuth(
             client_id=settings.spotify_client_id,
-            client_secret=settings.spotify_client_secret,
+            client_secret=settings.spotify_client_secret,  # None triggers PKCE
             redirect_uri=settings.spotify_redirect_uri,
             scope=SCOPES,
             open_browser=True,
@@ -64,7 +64,6 @@ class SpotifyDataClient:
         cache = TTLCache(settings.db_path)
         return cls(user_id=user_id, cache=cache, sp=sp)
 
-    # recent tracks with optional days_back filter
     def get_recent_tracks(self, limit: int = 200, days_back: int = 30) -> pd.DataFrame:
         params = {"limit": int(limit), "days_back": int(days_back)}
         cached = self.cache.get(self.user_id, "recent_tracks", params)
@@ -73,7 +72,6 @@ class SpotifyDataClient:
 
         items: List[dict] = []
         fetched = 0
-        # Spotify max 50 per call for recently played
         remaining = min(limit, 200)
         after_ts = None
         if days_back and days_back > 0:
@@ -98,7 +96,6 @@ class SpotifyDataClient:
             remaining -= len(page_items)
             if after_ts is not None:
                 break
-            # for before/after paging, use the oldest played_at in this page
             oldest = page_items[-1]["played_at"]
             after_ts = int(datetime.fromisoformat(oldest.replace("Z", "+00:00")).timestamp() * 1000)
 
@@ -148,14 +145,25 @@ class SpotifyDataClient:
             return pd.DataFrame(cached)
 
         rows: List[Dict[str, Any]] = []
+        def fetch_chunk(ids: List[str]) -> None:
+            nonlocal rows
+            try:
+                feats = _retryable_call(self.sp.audio_features, tracks=ids)
+                for f in feats:
+                    if f:
+                        f = dict(f)
+                        f["track_id"] = f.pop("id", None)
+                        rows.append(f)
+            except spotipy.SpotifyException as e:
+                status = getattr(e, "http_status", None)
+                if status and 400 <= status < 500 and len(ids) > 1:
+                    mid = max(1, len(ids) // 2)
+                    fetch_chunk(ids[:mid])
+                    fetch_chunk(ids[mid:])
+
         for i in range(0, len(track_ids), 100):
-            batch = track_ids[i : i + 100]
-            feats = _retryable_call(self.sp.audio_features, tracks=batch)
-            for f in feats:
-                if f:
-                    f = dict(f)
-                    f["track_id"] = f.pop("id", None)
-                    rows.append(f)
+            fetch_chunk(track_ids[i:i+100])
+
         df = pd.DataFrame(rows)
         self.cache.set(self.user_id, "audio_features", params, df.to_dict(orient="records"), AUDIO_TTL_SECONDS)
         return df
@@ -183,20 +191,54 @@ class SpotifyDataClient:
             "seed_artists": seed_artists or None,
             "seed_genres": seed_genres or None,
             "limit": min(100, limit),
+            "market": "from_token",
         }
         if audio_feature_targets:
             query_params.update({f"target_{k}": float(v) for k, v in audio_feature_targets.items()})
+        query_params = {k: v for k, v in query_params.items() if v is not None}
 
-        recs = _retryable_call(self.sp.recommendations, **query_params)
         rows: List[Dict[str, Any]] = []
-        for t in recs.get("tracks", []):
-            rows.append({
-                "track_id": t.get("id"),
-                "track_name": t.get("name"),
-                "artist_ids": [a.get("id") for a in t.get("artists", [])],
-                "artist_names": ", ".join(a.get("name") for a in t.get("artists", [])),
-                "album": t.get("album", {}).get("name"),
-            })
-        df = pd.DataFrame(rows)
+        try:
+            recs = _retryable_call(self.sp.recommendations, **query_params)
+            for t in recs.get("tracks", []):
+                rows.append({
+                    "track_id": t.get("id"),
+                    "track_name": t.get("name"),
+                    "artist_ids": [a.get("id") for a in t.get("artists", [])],
+                    "artist_names": ", ".join(a.get("name") for a in t.get("artists", [])),
+                    "album": t.get("album", {}).get("name"),
+                })
+        except spotipy.SpotifyException:
+            # Fallback per-artist to avoid bad seed combos
+            for a in (seed_artists or [])[:5]:
+                try:
+                    r = _retryable_call(self.sp.recommendations, seed_artists=[a], limit=min(100, limit), market="from_token")
+                    for t in r.get("tracks", []):
+                        rows.append({
+                            "track_id": t.get("id"),
+                            "track_name": t.get("name"),
+                            "artist_ids": [x.get("id") for x in t.get("artists", [])],
+                            "artist_names": ", ".join(x.get("name") for x in t.get("artists", [])),
+                            "album": t.get("album", {}).get("name"),
+                        })
+                except Exception:
+                    continue
+            # If still nothing, try genre-only with a safe default
+            if not rows:
+                try:
+                    safe_genre = (seed_genres or ["pop"])[:1]
+                    r = _retryable_call(self.sp.recommendations, seed_genres=safe_genre, limit=min(100, limit), market="from_token")
+                    for t in r.get("tracks", []):
+                        rows.append({
+                            "track_id": t.get("id"),
+                            "track_name": t.get("name"),
+                            "artist_ids": [x.get("id") for x in t.get("artists", [])],
+                            "artist_names": ", ".join(x.get("name") for x in t.get("artists", [])),
+                            "album": t.get("album", {}).get("name"),
+                        })
+                except Exception:
+                    pass
+
+        df = pd.DataFrame(rows).drop_duplicates("track_id").head(limit)
         self.cache.set(self.user_id, "search_candidates", params, df.to_dict(orient="records"), RECS_TTL_SECONDS)
         return df

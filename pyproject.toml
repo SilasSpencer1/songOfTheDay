@@ -7,7 +7,8 @@ license = "MIT"
 readme = "README.md"
 packages = [
     { include = "song_of_the_day", from = "src" },
-    { include = "data", from = "src" }
+    { include = "data", from = "src" },
+    { include = "model", from = "src" }
 ]
 
 [tool.poetry.dependencies]
