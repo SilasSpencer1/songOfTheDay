@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.env.*
+
+# macOS
+.DS_Store
+
+# Data
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+data/*-journal
+
+# Streamlit
+.streamlit/
+
+# Poetry
+poetry.lock

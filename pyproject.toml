@@ -1,0 +1,28 @@
+[tool.poetry]
+name = "song-of-the-day"
+version = "0.1.0"
+description = "Song of the Day recommender using Spotify data (spotipy, pandas, numpy, scikit-learn, streamlit, SQLite cache)"
+authors = ["Your Name <you@example.com>"]
+license = "MIT"
+readme = "README.md"
+packages = [
+    { include = "song_of_the_day", from = "src" },
+    { include = "data", from = "src" }
+]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+spotipy = "^2.24.0"
+pandas = "^2.2.2"
+numpy = "^1.26.4"
+scikit-learn = "^1.5.0"
+streamlit = "^1.36.0"
+python-dotenv = "^1.0.1"
+requests = "^2.32.3"
+
+[tool.poetry.scripts]
+song-of-the-day = "song_of_the_day.cli:main"
+
+[build-system]
+requires = ["poetry-core>=1.9.0"]
+build-backend = "poetry.core.masonry.api"
