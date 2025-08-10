@@ -17,7 +17,7 @@ class SpotifyService:
         self._sp = spotipy.Spotify(
             auth_manager=SpotifyOAuth(
                 client_id=settings.spotify_client_id,
-                client_secret=settings.spotify_client_secret,  # None triggers PKCE
+                client_secret=settings.spotify_client_secret,
                 redirect_uri=settings.spotify_redirect_uri,
                 scope=SPOTIFY_SCOPES,
                 username=settings.spotify_username,
