@@ -4,26 +4,37 @@ from typing import Dict, Iterable, List, Optional
 
 import pandas as pd
 import spotipy
-from spotipy.oauth2 import SpotifyOAuth
+from spotipy.oauth2 import SpotifyOAuth, SpotifyClientCredentials
 
 from .config import Settings
 
 
-SPOTIFY_SCOPES = "user-read-recently-played user-top-read playlist-read-private user-library-read"
+SPOTIFY_SCOPES = "user-read-recently-played user-top-read"
 
 
 class SpotifyService:
     def __init__(self, settings: Settings):
+        self._settings = settings
         self._sp = spotipy.Spotify(
             auth_manager=SpotifyOAuth(
                 client_id=settings.spotify_client_id,
-                client_secret=settings.spotify_client_secret,  # None triggers PKCE
+                client_secret=settings.spotify_client_secret,
                 redirect_uri=settings.spotify_redirect_uri,
                 scope=SPOTIFY_SCOPES,
                 username=settings.spotify_username,
                 open_browser=True,
                 cache_path=None,
-            )
+            ),
+            requests_timeout=15,
+        )
+
+    def _sp_client_credentials(self) -> spotipy.Spotify:
+        return spotipy.Spotify(
+            client_credentials_manager=SpotifyClientCredentials(
+                client_id=self._settings.spotify_client_id,
+                client_secret=self._settings.spotify_client_secret,
+            ),
+            requests_timeout=15,
         )
 
     def get_recent_tracks(self, limit: int = 50) -> pd.DataFrame:
@@ -74,29 +85,38 @@ class SpotifyService:
         track_ids_list = list(dict.fromkeys([t for t in track_ids if t]))
         rows: List[Dict] = []
 
+        def fetch_with(client: spotipy.Spotify, ids: List[str]) -> None:
+            nonlocal rows
+            feats = client.audio_features(ids)
+            for f in feats:
+                if f is None:
+                    continue
+                rows.append(f)
+
         def fetch_chunk(ids: List[str]) -> None:
             nonlocal rows
             try:
-                feats = self._sp.audio_features(ids)
-                for f in feats:
-                    if f is None:
-                        continue
-                    rows.append(f)
+                fetch_with(self._sp, ids)
             except spotipy.SpotifyException as e:
                 status = getattr(e, "http_status", None)
-                # Split into smaller chunks on 4xx; skip truly bad ids
+                if status in (401, 403):
+                    try:
+                        fetch_with(self._sp_client_credentials(), ids)
+                        return
+                    except Exception:
+                        pass
                 if status and 400 <= status < 500 and len(ids) > 1:
                     mid = max(1, len(ids) // 2)
                     fetch_chunk(ids[:mid])
                     fetch_chunk(ids[mid:])
-                else:
-                    return
+                # else drop ids silently
 
         for i in range(0, len(track_ids_list), 100):
             batch = track_ids_list[i : i + 100]
             if not batch:
                 continue
             fetch_chunk(batch)
+
         df = pd.DataFrame(rows)
         if not df.empty:
             df = df.rename(columns={"id": "track_id"})
@@ -119,7 +139,9 @@ class SpotifyService:
         }
         if target_features:
             params.update({f"target_{k}": float(v) for k, v in target_features.items()})
+
         params_clean = {k: v for k, v in params.items() if v is not None}
+
         try:
             recs = self._sp.recommendations(**params_clean)
             rows = []

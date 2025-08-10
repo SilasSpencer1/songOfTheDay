@@ -52,39 +52,43 @@ def _fetch_top_artists_df(client: Any) -> pd.DataFrame:
 
 
 def _fetch_saved_recent_track_ids(client: Any, days: int) -> set[str]:
-    # Optional filter, only if raw spotipy is available
+    # Optional filter, only if raw spotipy is available. If missing scope, skip filter.
     sp = _get_sp(client)
     if sp is None:
         return set()
-    cutoff = datetime.utcnow() - timedelta(days=days)
-    track_ids: set[str] = set()
-    offset = 0
-    page_size = 50
-    while True:
-        payload = sp.current_user_saved_tracks(limit=page_size, offset=offset)
-        items = payload.get("items", [])
-        if not items:
-            break
-        for it in items:
-            added_at = it.get("added_at")
-            dt = None
-            try:
-                if added_at:
-                    dt = datetime.fromisoformat(added_at.replace("Z", "+00:00")).replace(tzinfo=None)
-            except Exception:
+    try:
+        cutoff = datetime.utcnow() - timedelta(days=days)
+        track_ids: set[str] = set()
+        offset = 0
+        page_size = 50
+        while True:
+            payload = sp.current_user_saved_tracks(limit=page_size, offset=offset)
+            items = payload.get("items", [])
+            if not items:
+                break
+            for it in items:
+                added_at = it.get("added_at")
                 dt = None
-            if dt and dt >= cutoff:
-                tr = it.get("track", {})
-                tid = tr.get("id")
-                if tid:
-                    track_ids.add(tid)
-        # Stop early if this page is entirely older than cutoff to reduce paging
-        if items and all((datetime.fromisoformat(x.get("added_at").replace("Z", "+00:00")).replace(tzinfo=None) < cutoff) for x in items if x.get("added_at")):
-            break
-        offset += len(items)
-        if len(items) < page_size:
-            break
-    return track_ids
+                try:
+                    if added_at:
+                        dt = datetime.fromisoformat(added_at.replace("Z", "+00:00")).replace(tzinfo=None)
+                except Exception:
+                    dt = None
+                if dt and dt >= cutoff:
+                    tr = it.get("track", {})
+                    tid = tr.get("id")
+                    if tid:
+                        track_ids.add(tid)
+            # Stop early if this page is entirely older than cutoff to reduce paging
+            if items and all((datetime.fromisoformat(x.get("added_at").replace("Z", "+00:00")).replace(tzinfo=None) < cutoff) for x in items if x.get("added_at")):
+                break
+            offset += len(items)
+            if len(items) < page_size:
+                break
+        return track_ids
+    except Exception:
+        # Missing scope or other error; skip saved filter
+        return set()
 
 
 def _artist_genres_map(client: Any, artist_ids: Iterable[str]) -> Dict[str, List[str]]:
@@ -315,6 +319,17 @@ def generate_candidate_pool(client: Any, mood: Optional[str] = None, cfg: Candid
     saved_recent_ids = _fetch_saved_recent_track_ids(client, cfg.saved_days_window)
     if saved_recent_ids:
         raw = raw[~raw["track_id"].isin(saved_recent_ids)]
+
+    # If filtering removed everything, rebuild from artist top-tracks as a last resort
+    if raw.empty:
+        raw = _fallback_artist_top_tracks(client, seed_artists, cfg.target_total)
+        if raw.empty:
+            return pd.DataFrame(columns=["track_id", "artist_id", "name", "artist_name", "genres", "novelty"])  # still empty
+        if "artist_ids" not in raw.columns:
+            raw["artist_ids"] = [[] for _ in range(len(raw))]
+        raw["artist_id"] = raw["artist_ids"].apply(_primary_artist_id)
+        raw["name"] = raw.get("track_name", raw.get("name", "")).astype(str)
+        raw["artist_name"] = raw.get("artist_names", raw.get("artist_name", "")).astype(str)
 
     # Add genres for candidate artists
     genres_map = _artist_genres_map(client, raw["artist_id"].dropna().unique().tolist())

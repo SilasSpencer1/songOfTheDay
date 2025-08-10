@@ -7,6 +7,12 @@ from typing import Dict, List, Optional
 import pandas as pd
 import streamlit as st
 
+# Suppress noisy HTTP error logs from retries/fallbacks
+import logging
+logging.getLogger("spotipy.client").setLevel(logging.ERROR)
+logging.getLogger("spotipy.oauth2").setLevel(logging.ERROR)
+logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
+
 from song_of_the_day.config import load_settings
 from model.candidate_gen import generate_candidate_pool
 from model.rerank import rerank_candidates
@@ -246,4 +252,5 @@ if st.button("Recommend", type="primary"):
 
 st.markdown("---")
 st.markdown("To run: `poetry run streamlit run app.py`")
+
 

@@ -52,7 +52,7 @@ class SpotifyDataClient:
         settings = load_settings()
         auth = SpotifyOAuth(
             client_id=settings.spotify_client_id,
-            client_secret=settings.spotify_client_secret,  # None triggers PKCE
+            client_secret=settings.spotify_client_secret,
             redirect_uri=settings.spotify_redirect_uri,
             scope=SCOPES,
             open_browser=True,
@@ -64,6 +64,7 @@ class SpotifyDataClient:
         cache = TTLCache(settings.db_path)
         return cls(user_id=user_id, cache=cache, sp=sp)
 
+    # recent tracks with optional days_back filter
     def get_recent_tracks(self, limit: int = 200, days_back: int = 30) -> pd.DataFrame:
         params = {"limit": int(limit), "days_back": int(days_back)}
         cached = self.cache.get(self.user_id, "recent_tracks", params)
@@ -72,6 +73,7 @@ class SpotifyDataClient:
 
         items: List[dict] = []
         fetched = 0
+        # Spotify max 50 per call for recently played
         remaining = min(limit, 200)
         after_ts = None
         if days_back and days_back > 0:
@@ -96,6 +98,7 @@ class SpotifyDataClient:
             remaining -= len(page_items)
             if after_ts is not None:
                 break
+            # for before/after paging, use the oldest played_at in this page
             oldest = page_items[-1]["played_at"]
             after_ts = int(datetime.fromisoformat(oldest.replace("Z", "+00:00")).timestamp() * 1000)
 
@@ -195,6 +198,7 @@ class SpotifyDataClient:
         }
         if audio_feature_targets:
             query_params.update({f"target_{k}": float(v) for k, v in audio_feature_targets.items()})
+        # Clean None params
         query_params = {k: v for k, v in query_params.items() if v is not None}
 
         rows: List[Dict[str, Any]] = []
